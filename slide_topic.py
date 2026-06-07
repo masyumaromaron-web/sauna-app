@@ -9,6 +9,8 @@ def _find_font_path():
     candidates = [
         "C:/Windows/Fonts/meiryo.ttc",                 # Windows（手元）
         "fonts/NotoSansJP-Regular.ttf",                # Render用に同梱するフォント
+        "fonts/NotoSansJP-Regular.ttf",                # Render用に同梱するフォント
+        "NotoSansJP-Regular.ttf",                      # 一番外側に置いた場合
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",  # Linux標準にあれば
     ]
     for path in candidates:
