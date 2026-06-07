@@ -1,0 +1,11 @@
+# Renderにアプリの起動方法を教える設定ファイル
+services:
+  - type: web
+    name: sauna-topic-app
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
