@@ -3,6 +3,7 @@ import re
 import html
 import json
 import time
+import random
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -216,15 +217,22 @@ def save_used_theme(index):
         json.dump({"last_index": index}, f, ensure_ascii=False)
 
 def get_today_theme(candidates, used_theme_data):
-    last_index = used_theme_data.get("last_index", -1)
-    for offset in range(1, len(THEME_ORDER) + 1):
-        index = (last_index + offset) % len(THEME_ORDER)
-        theme = THEME_ORDER[index]
+    # 候補記事が存在するテーマだけを集める
+    available = []
+    for index, theme in enumerate(THEME_ORDER):
         keywords = THEME_DEFINITIONS[theme]
         matched = [n for n in candidates if any(kw in n["combined_text"] for kw in keywords)]
         if matched:
-            print(f"テーマ決定: {theme}（マッチ{len(matched)}件）")
-            return theme, index
+            available.append((theme, index, len(matched)))
+
+    if available:
+        # 候補のあるテーマからランダムに選ぶ（毎回違うテーマになりやすくする）
+        theme, index, count = random.choice(available)
+        print(f"テーマ決定: {theme}（マッチ{count}件・ランダム選択）")
+        return theme, index
+
+    # どのテーマにも候補がなければ従来どおり順番送り
+    last_index = used_theme_data.get("last_index", -1)
     index = (last_index + 1) % len(THEME_ORDER)
     return THEME_ORDER[index], index
 
@@ -745,6 +753,11 @@ def main():
         theme_matched = news_candidates
         theme_matched.sort(key=lambda x: x["score"], reverse=True)
 
+    # スコア上位グループ（最大8件）をシャッフルして、毎回違う記事が選ばれやすくする。
+    # スコアの高い良記事の中で順番をランダム化するので、質は保ちつつ被りを減らせる。
+    top_pool = theme_matched[:8]
+    random.shuffle(top_pool)
+
     # 本文が取れる記事を優先して採用
     selected_news = None
     selected_body = ""
@@ -754,7 +767,7 @@ def main():
     init_gemini()
     print("本文取得できる候補を探します")
 
-    for candidate in theme_matched[:5]:
+    for candidate in top_pool:
         print(f"本文取得中: {candidate['title']}")
         body, method = fetch_article_body(candidate["link"], title=candidate["title"])
 
