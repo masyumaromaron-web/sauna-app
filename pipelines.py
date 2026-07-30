@@ -3,10 +3,14 @@
 
 公開APIは generate() ひとつだけ:
 
-    images, caption = generate("topic", on_progress=lambda msg: ...)
+    images, caption = generate("topic", on_progress=lambda phase, msg: ...)
 
     images  … 生成された画像の絶対パスの配列（topic_1.jpg → topic_4.jpg の順）
     caption … キャプション本文の文字列
+
+on_progress は (phase, message) で呼ばれる。phase は PHASE_LABELS のキーで、
+画面の進捗バーに使う。message はそのまま出せる日本語か、スクリプトの標準出力
+1行（「本文取得中: ...」など）。
 
 ■ 既存スクリプトには一切手を加えていない
 news_topic.py / slide_topic.py / caption_topic.py は、中間ファイルを
@@ -33,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -50,6 +55,14 @@ STATE_FILES = (
     "used_news_sento.json", "used_theme_sento.json",
     "used_news_topic.json", "used_theme_topic.json",
 )
+
+# 進捗表示に使うフェーズ。画面側はこのキーを見て「今どこか」を出す。
+PHASE_LABELS = {
+    "news": "ニュースを探しています",
+    "slide": "スライドを作っています",
+    "caption": "キャプションを作っています",
+    "done": "完成しました",
+}
 
 
 class Pipeline:
@@ -121,21 +134,42 @@ def _make_workspace(kind):
     return workspace
 
 
-def _run_script(script, workspace, on_progress=None):
+# 画面に出しても意味がない行。Pythonの警告やトレースバックの断片が
+# 進捗表示に紛れ込むと、動いているのか壊れたのか分からなくなる。
+# 失敗時のログには全行残すので、ここで捨てるのは表示だけ。
+_NOISE_PATTERN = re.compile(
+    r"warnings?\.warn"
+    r"|FutureWarning|DeprecationWarning|UserWarning|NotOpenSSLWarning|ResourceWarning"
+    r"|^Traceback"
+    r"|^\s*File \""
+)
+
+
+def _is_noise(line):
+    return not line.strip() or bool(_NOISE_PATTERN.search(line))
+
+
+def _run_script(script, workspace, phase, on_progress=None):
     """スクリプトを1本、作業ディレクトリの中で実行する。
 
-    標準出力は1行ずつ拾って on_progress に渡す。スクリプト側が
+    標準出力は1行ずつ拾って on_progress(phase, 行) に渡す。スクリプト側が
     「本文取得中: ...」などを print しているので、そのまま進捗表示に使える。
     """
     script_path = os.path.join(BASE_DIR, script)
     if not os.path.exists(script_path):
         raise PipelineError(f"{script} が見つかりません")
 
+    # 標準出力がパイプにつながると、Pythonは既定でまとめ書き（ブロックバッファ）に
+    # なる。それだと print が実行の終わりまで届かず、進捗表示が一気に飛ぶ。
+    # PYTHONUNBUFFERED を立てて1行ずつ流れるようにする。
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
     lines = []
     process = subprocess.Popen(
         [sys.executable, script_path],
         cwd=workspace,
-        env=os.environ.copy(),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -146,8 +180,8 @@ def _run_script(script, workspace, on_progress=None):
         for line in process.stdout:
             line = line.rstrip()
             lines.append(line)
-            if line and on_progress:
-                on_progress(line)
+            if on_progress and not _is_noise(line):
+                on_progress(phase, line.strip())
         process.wait(timeout=STEP_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
         process.kill()
@@ -184,15 +218,15 @@ def generate(kind, on_progress=None):
     if pipeline is None:
         raise PipelineError(f"知らないジャンルです: {kind}")
 
-    def notify(message):
+    def notify(phase, message):
         if on_progress:
-            on_progress(message)
+            on_progress(phase, message)
 
     workspace = _make_workspace(kind)
 
     # 1. ニュース取得
-    notify(f"{pipeline.label}のニュースを探しています…")
-    _run_script(pipeline.news, workspace, on_progress)
+    notify("news", f"{pipeline.label}のニュースを探しています")
+    _run_script(pipeline.news, workspace, "news", on_progress)
 
     # ニュースが0件でもスクリプトは正常終了してしまうので、ここで止める。
     # 素通りさせると締めスライド1枚だけができて、成功したように見えてしまう。
@@ -203,8 +237,8 @@ def generate(kind, on_progress=None):
         )
 
     # 2. スライド生成
-    notify("スライドを作っています…")
-    _run_script(pipeline.slide, workspace, on_progress)
+    notify("slide", "スライドを作っています")
+    _run_script(pipeline.slide, workspace, "slide", on_progress)
 
     images = sorted(
         glob.glob(os.path.join(workspace, f"{pipeline.image_prefix}_*.jpg")),
@@ -216,15 +250,15 @@ def generate(kind, on_progress=None):
     # 3. キャプション生成（無ければ飛ばす）
     caption = ""
     if pipeline.caption:
-        notify("キャプションを作っています…")
-        _run_script(pipeline.caption, workspace, on_progress)
+        notify("caption", "キャプションを作っています")
+        _run_script(pipeline.caption, workspace, "caption", on_progress)
 
         caption_path = os.path.join(workspace, pipeline.caption_file)
         if os.path.exists(caption_path):
             with open(caption_path, "r", encoding="utf-8") as f:
                 caption = f.read()
 
-    notify(f"完成しました（画像{len(images)}枚）")
+    notify("done", f"完成しました（画像{len(images)}枚）")
     return images, caption
 
 
@@ -232,6 +266,34 @@ def cleanup(paths):
     """generate() が返した画像パスから作業ディレクトリを割り出して消す。"""
     if not paths:
         return
-    workspace = os.path.dirname(paths[0])
+    remove_workspace(os.path.dirname(paths[0]))
+
+
+def remove_workspace(workspace):
+    """作業ディレクトリを片付ける。見当違いの場所を消さないよう名前を確かめる。"""
+    if not workspace:
+        return
     if os.path.basename(workspace).startswith("sauna-"):
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def sweep_orphan_workspaces(older_than_sec=3600):
+    """前回のプロセスが残していった作業ディレクトリを片付ける。
+
+    サーバーが再起動するとジョブ一覧が消えるので、作業ディレクトリだけが
+    取り残される。起動時に一度だけ呼ぶ。実行中のものを巻き込まないよう、
+    1ステップの上限（STEP_TIMEOUT_SEC）より十分に古いものだけを対象にする。
+    """
+    now = time.time()
+    removed = 0
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "sauna-*")):
+        if not os.path.isdir(path):
+            continue
+        try:
+            if now - os.path.getmtime(path) < older_than_sec:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += 1
+    return removed
