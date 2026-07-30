@@ -229,7 +229,8 @@ def api_image(job_id: str, index: int):
 
 
 # ============ スマホで開く画面（HTML） ============
-# 見た目の作り込みは Phase 3 で行う。ここでは「今何をしているか文字で出る」ことを優先。
+# 見た目の作り込みは Web Share API の実機確認が済んでから行う。
+# ここでは「保存できること」を最優先にしている。
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="ja">
@@ -258,7 +259,38 @@ HTML_PAGE = """
   }
   .bar { height: 6px; background: #1c3a2e; border-radius: 3px; overflow: hidden; display: none; }
   .bar > i { display: block; height: 100%; width: 0; background: #2c5; transition: width .4s; }
-  .imgs img { width: 100%; border-radius: 12px; margin-bottom: 12px; }
+
+  .toolbar {
+    display: none; align-items: center; justify-content: space-between;
+    margin: 18px 0 10px; font-size: 14px; color: #b7d3c5;
+  }
+  .toolbar label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .toolbar input { width: 20px; height: 20px; accent-color: #2c5; }
+  .count { color: #8fae9f; font-size: 13px; }
+
+  .shot { position: relative; margin-bottom: 12px; }
+  .shot img { width: 100%; border-radius: 12px; display: block; }
+  .shot.off img { opacity: .35; }
+  .shot label {
+    position: absolute; top: 10px; left: 10px;
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(15,31,26,.82); color: #eaf3ee;
+    padding: 8px 12px; border-radius: 10px; font-size: 14px; cursor: pointer;
+  }
+  .shot input { width: 20px; height: 20px; accent-color: #2c5; }
+
+  button.save {
+    display: none; width: 100%; padding: 18px; margin-top: 4px;
+    font-size: 17px; font-weight: bold;
+    background: #e8862d; color: #1a1005; border: none; border-radius: 14px;
+    cursor: pointer;
+  }
+  button.save:disabled { background: #5a4a38; color: #9a8b7a; }
+  .hint {
+    text-align: center; color: #8fae9f; font-size: 12px;
+    min-height: 18px; margin-top: 8px;
+  }
+
   .caption-box {
     background: #16302593; border: 1px solid #2c5; border-radius: 12px;
     padding: 16px; white-space: pre-wrap; font-size: 14px; line-height: 1.7;
@@ -280,7 +312,17 @@ HTML_PAGE = """
   <div class="status" id="status"></div>
   <div class="detail" id="detail"></div>
   <div class="bar" id="bar"><i id="bar-fill"></i></div>
+
+  <div class="toolbar" id="toolbar">
+    <label><input type="checkbox" id="select-all" checked onchange="toggleAll()"> 全選択</label>
+    <span class="count" id="count"></span>
+  </div>
+
   <div class="imgs" id="imgs"></div>
+
+  <button class="save" id="save" onclick="saveSelected()" disabled>選択した画像を保存</button>
+  <div class="hint" id="hint"></div>
+
   <div id="caption-area"></div>
   <details>
     <summary>ログを見る（うまくいかないとき）</summary>
@@ -291,6 +333,12 @@ HTML_PAGE = """
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// 共有用のFileを先に作っておく。
+// iOSのSafariは「タップから navigator.share までの間に重い処理を挟む」と
+// ユーザー操作とみなさなくなり、共有シートが出ない。だから画像を表示した
+// 時点でblobを取り切っておき、タップ時は組み立てるだけにする。
+let sharableFiles = [];
+
 function setStatus(text, detail) {
   $('status').textContent = text;
   $('detail').textContent = detail || '';
@@ -299,6 +347,10 @@ function setStatus(text, detail) {
 function setProgress(value) {
   $('bar').style.display = 'block';
   $('bar-fill').style.width = value + '%';
+}
+
+function setHint(text) {
+  $('hint').textContent = text || '';
 }
 
 async function wakeServer() {
@@ -322,6 +374,11 @@ async function start() {
   $('imgs').innerHTML = '';
   $('caption-area').innerHTML = '';
   $('log').textContent = '';
+  $('toolbar').style.display = 'none';
+  $('save').style.display = 'none';
+  $('save').disabled = true;
+  sharableFiles = [];
+  setHint('');
   setProgress(0);
 
   try {
@@ -369,33 +426,158 @@ async function poll(jobId) {
       return;
     }
     if (data.state === 'done') {
-      render(data);
+      await render(data);
       return;
     }
   }
 }
 
-function render(data) {
-  setStatus('完成しました ✨', '画像を長押しで保存できます');
+async function render(data) {
+  setStatus('完成しました ✨', '');
 
-  data.images.forEach(url => {
+  data.images.forEach((url, i) => {
+    const shot = document.createElement('div');
+    shot.className = 'shot';
+    shot.id = 'shot-' + i;
+
     const img = document.createElement('img');
     img.src = url;
-    $('imgs').appendChild(img);
+    shot.appendChild(img);
+
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = true;
+    box.dataset.index = i;
+    box.onchange = onPickChange;
+    label.appendChild(box);
+    label.appendChild(document.createTextNode((i + 1) + '枚目'));
+    shot.appendChild(label);
+
+    $('imgs').appendChild(shot);
   });
 
-  if (!data.caption) return;
+  $('toolbar').style.display = 'flex';
+  $('save').style.display = 'block';
+  renderCaption(data.caption);
+
+  // ここで先読み。終わるまで保存ボタンは押せないようにしておく。
+  setHint('画像を保存できる形に準備しています…');
+  updateCount();
+  try {
+    sharableFiles = await prepareFiles(data.images);
+    $('save').disabled = false;
+    setHint(shareSupported()
+      ? '共有シートから「画像を保存」でカメラロールに入ります'
+      : 'この端末では1枚ずつダウンロードします');
+  } catch (e) {
+    setHint('⚠️ 画像の準備に失敗しました: ' + e);
+  }
+  updateCount();
+}
+
+async function prepareFiles(urls) {
+  const files = [];
+  for (let i = 0; i < urls.length; i++) {
+    const res = await fetch(urls[i], { cache: 'no-store' });
+    if (!res.ok) throw new Error(urls[i] + ' が取得できません');
+    const blob = await res.blob();
+    files.push(new File([blob], 'sauna_' + (i + 1) + '.jpg', { type: 'image/jpeg' }));
+  }
+  return files;
+}
+
+function pickBoxes() {
+  return Array.from(document.querySelectorAll('.shot input[type=checkbox]'));
+}
+
+function selectedFiles() {
+  return pickBoxes()
+    .filter(b => b.checked)
+    .map(b => sharableFiles[Number(b.dataset.index)])
+    .filter(Boolean);
+}
+
+function onPickChange() {
+  const boxes = pickBoxes();
+  boxes.forEach(b => {
+    const shot = $('shot-' + b.dataset.index);
+    if (shot) shot.classList.toggle('off', !b.checked);
+  });
+  $('select-all').checked = boxes.every(b => b.checked);
+  updateCount();
+}
+
+function toggleAll() {
+  const on = $('select-all').checked;
+  pickBoxes().forEach(b => { b.checked = on; });
+  onPickChange();
+}
+
+function updateCount() {
+  const n = pickBoxes().filter(b => b.checked).length;
+  $('count').textContent = n + ' / ' + pickBoxes().length + ' 枚を選択中';
+  $('save').textContent = n > 0 ? ('選択した' + n + '枚を保存') : '選択した画像を保存';
+}
+
+function shareSupported() {
+  // ファイル共有ができるかどうか。HTTPSでないと navigator.share 自体が無い。
+  if (!navigator.canShare || !navigator.share) return false;
+  try {
+    const probe = new File([new Blob(['x'])], 'probe.jpg', { type: 'image/jpeg' });
+    return navigator.canShare({ files: [probe] });
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveSelected() {
+  const files = selectedFiles();
+  if (files.length === 0) {
+    setHint('保存する画像を選んでください');
+    return;
+  }
+
+  // ここから navigator.share までは非同期処理を挟まない（ジェスチャーを保つため）
+  if (navigator.canShare && navigator.canShare({ files })) {
+    navigator.share({ files })
+      .then(() => setHint('共有しました'))
+      .catch(err => {
+        if (err && err.name === 'AbortError') { setHint(''); return; }  // 閉じただけ
+        setHint('⚠️ 共有できませんでした: ' + (err && err.message ? err.message : err));
+      });
+    return;
+  }
+
+  // PCなど files 共有に対応していない環境は1枚ずつダウンロードに落とす
+  files.forEach(downloadFile);
+  setHint(files.length + '枚をダウンロードしました');
+}
+
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function renderCaption(caption) {
+  if (!caption) return;
 
   const box = document.createElement('div');
   box.className = 'caption-box';
-  box.textContent = data.caption;
+  box.textContent = caption;
   $('caption-area').appendChild(box);
 
   const copyBtn = document.createElement('button');
   copyBtn.className = 'copy';
   copyBtn.textContent = '📋 キャプションをコピー';
   copyBtn.onclick = () => {
-    navigator.clipboard.writeText(data.caption);
+    navigator.clipboard.writeText(caption);
     copyBtn.textContent = '✅ コピーしました';
     setTimeout(() => copyBtn.textContent = '📋 キャプションをコピー', 2000);
   };
