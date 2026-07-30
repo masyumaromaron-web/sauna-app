@@ -16,18 +16,28 @@
 
 生成物は作業ディレクトリに置いたまま配信し、古いジョブから順に消す。
 Renderのディスクは揮発するので、そもそも永続保存はしない。
+
+URLを知られると誰でもGeminiを叩けてしまうので、環境変数 APP_PASSCODE に
+合言葉を入れておくと入口で1回だけ聞くようになる。厳密な認証ではなく、
+API濫用を防ぐ目隠しという位置づけ。
 """
 
+import hmac
 import os
 import threading
 import time
 import uuid
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 import pipelines
 
 app = FastAPI()
+
+# 合言葉。未設定なら誰でも使える（手元で動かすときに困らないように）。
+APP_PASSCODE = os.getenv("APP_PASSCODE", "").strip()
+if not APP_PASSCODE:
+    print("APP_PASSCODE が未設定です。合言葉なしで誰でも生成できる状態です。")
 
 # 前回のプロセスが残した作業ディレクトリを片付けてから始める。
 # サーバーが再起動するとジョブ一覧が消え、作業ディレクトリだけが取り残されるため。
@@ -171,9 +181,38 @@ def ping():
     return {"ok": True}
 
 
+def _passcode_ok(value):
+    """合言葉が合っているか。未設定なら誰でも通す。"""
+    if not APP_PASSCODE:
+        return True
+    return hmac.compare_digest((value or "").strip(), APP_PASSCODE)
+
+
+@app.get("/api/config")
+def api_config():
+    """画面の組み立てに要る情報。合言葉が要るかと、選べるジャンル。"""
+    return {
+        "needs_passcode": bool(APP_PASSCODE),
+        "kinds": [{"key": key, "label": label}
+                  for key, label in pipelines.available_kinds()],
+    }
+
+
+@app.post("/api/verify")
+async def api_verify(payload: dict = None):
+    """合言葉が合っているかだけを返す。合っていれば画面側が覚えておく。"""
+    if _passcode_ok((payload or {}).get("passcode")):
+        return {"ok": True}
+    return JSONResponse({"ok": False, "error": "合言葉が違います"}, status_code=401)
+
+
 @app.post("/api/generate")
-async def api_generate(payload: dict = None):
+async def api_generate(payload: dict = None, x_passcode: str = Header(default="")):
     """生成を始めて、すぐ job_id を返す。"""
+    # 費用がかかるのはここだけなので、合言葉はこの入口で確かめる
+    if not _passcode_ok(x_passcode):
+        return JSONResponse({"error": "合言葉が違います"}, status_code=401)
+
     kind = (payload or {}).get("type", "topic")
     if kind not in pipelines.PIPELINES:
         return JSONResponse({"error": f"知らないジャンルです: {kind}"}, status_code=400)
@@ -331,11 +370,48 @@ HTML_PAGE = """
   details { margin-top: 24px; color: var(--muted); font-size: 12px; }
   summary { cursor: pointer; }
   pre { white-space: pre-wrap; word-break: break-all; }
+
+  /* 合言葉の入口 */
+  #gate { display: none; margin-top: 40px; text-align: center; }
+  #gate input {
+    width: 100%; padding: 16px; font-size: 17px; text-align: center;
+    background: var(--panel); color: var(--cream);
+    border: 1px solid var(--line); border-radius: 12px;
+    font-family: inherit; margin-bottom: 12px;
+  }
+  #gate button {
+    width: 100%; padding: 16px; font-size: 17px; font-weight: bold;
+    background: var(--cream); color: var(--navy);
+    border: none; border-radius: 12px;
+  }
+  #gate .hint { margin-top: 12px; }
+  #main { display: none; }
+
+  /* ジャンル選択 */
+  .kinds { display: flex; gap: 8px; margin-bottom: 14px; }
+  .kinds button {
+    flex: 1; padding: 12px 6px; font-size: 14px; font-weight: bold;
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 12px;
+  }
+  .kinds button.on { background: var(--panel); color: var(--cream); border-color: var(--cream); }
+  .kinds:empty { display: none; }
 </style>
 </head>
 <body>
   <h1>♨️ サウナ話題ジェネレーター</h1>
-  <div class="sub">ボタンを押すと記事を選んで画像とキャプションを作ります</div>
+
+  <div id="gate">
+    <div class="sub">合言葉を入れてください</div>
+    <input id="passcode" type="password" inputmode="text"
+           autocomplete="off" placeholder="合言葉">
+    <button onclick="unlock()">はじめる</button>
+    <div class="hint" id="gate-hint"></div>
+  </div>
+
+<div id="main">
+  <div class="sub">ジャンルを選んで、生成ボタンを押してください</div>
+  <div class="kinds" id="kinds"></div>
   <button id="go" onclick="start()">記事を生成する</button>
   <div class="status" id="status"></div>
   <div class="detail" id="detail"></div>
@@ -356,10 +432,17 @@ HTML_PAGE = """
     <summary>ログを見る（うまくいかないとき）</summary>
     <pre id="log"></pre>
   </details>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// 合言葉は一度入れたら localStorage に覚えておく。
+// PWAで開くたびに聞かれると実用に耐えないため。
+const PASS_KEY = 'sauna-app-passcode';
+let passcode = localStorage.getItem(PASS_KEY) || '';
+let kind = 'topic';
 
 // 共有用のFileを先に作っておく。
 // iOSのSafariは「タップから navigator.share までの間に重い処理を挟む」と
@@ -396,6 +479,80 @@ async function wakeServer() {
   return false;
 }
 
+// ---- 入口 ----------------------------------------------------------
+
+async function boot() {
+  let config = { needs_passcode: false, kinds: [] };
+  try {
+    const res = await fetch('/api/config', { cache: 'no-store' });
+    config = await res.json();
+  } catch (e) { /* 起きていないだけかもしれない。合言葉なしとして進む */ }
+
+  buildKinds(config.kinds);
+
+  if (config.needs_passcode && !passcode) {
+    showGate();
+  } else {
+    showMain();
+  }
+}
+
+function showGate(message) {
+  $('gate').style.display = 'block';
+  $('main').style.display = 'none';
+  $('gate-hint').textContent = message || '';
+  $('passcode').focus();
+}
+
+function showMain() {
+  $('gate').style.display = 'none';
+  $('main').style.display = 'block';
+}
+
+async function unlock() {
+  const value = $('passcode').value.trim();
+  if (!value) { $('gate-hint').textContent = '合言葉を入れてください'; return; }
+
+  $('gate-hint').textContent = '確認しています…';
+  try {
+    const res = await fetch('/api/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode: value })
+    });
+    if (!res.ok) { $('gate-hint').textContent = '合言葉が違います'; return; }
+  } catch (e) {
+    $('gate-hint').textContent = 'サーバーにつながりません。少し待って試してください';
+    return;
+  }
+
+  passcode = value;
+  localStorage.setItem(PASS_KEY, value);
+  $('passcode').value = '';
+  showMain();
+}
+
+function buildKinds(kinds) {
+  const box = $('kinds');
+  box.innerHTML = '';
+  if (!kinds || kinds.length < 2) return;   // 1種類しかないなら選ばせない
+
+  kind = kinds[0].key;
+  kinds.forEach((k, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = k.label;
+    btn.className = i === 0 ? 'on' : '';
+    btn.onclick = () => {
+      kind = k.key;
+      Array.from(box.children).forEach(c => c.classList.remove('on'));
+      btn.classList.add('on');
+    };
+    box.appendChild(btn);
+  });
+}
+
+// ---- 生成 ----------------------------------------------------------
+
 async function start() {
   const btn = $('go');
   btn.disabled = true;
@@ -419,11 +576,22 @@ async function start() {
     setStatus('生成を開始しています…', '');
     const res = await fetch('/api/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'topic' })
+      headers: { 'Content-Type': 'application/json', 'X-Passcode': passcode },
+      body: JSON.stringify({ type: kind })
     });
-    const { job_id } = await res.json();
 
+    if (res.status === 401) {
+      // 合言葉が変わったか、覚えていたものが古い。入口に戻す
+      localStorage.removeItem(PASS_KEY);
+      passcode = '';
+      setStatus('', '');
+      $('bar').style.display = 'none';
+      showGate('合言葉をもう一度入れてください');
+      btn.disabled = false;
+      return;
+    }
+
+    const { job_id } = await res.json();
     await poll(job_id);
   } catch (e) {
     setStatus('⚠️ エラーが起きました', '');
@@ -611,6 +779,12 @@ function renderCaption(caption) {
   };
   $('caption-area').appendChild(copyBtn);
 }
+
+$('passcode').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') unlock();
+});
+
+boot();
 </script>
 </body>
 </html>
