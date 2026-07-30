@@ -173,6 +173,28 @@ def _is_noise(line):
     return not line.strip() or bool(_NOISE_PATTERN.search(line))
 
 
+# Geminiの1日の無料枠を使い切ったときの目印。エラー本文が長大なJSONなので、
+# そのまま画面に出すと何が起きたのか分からなくなる。
+_QUOTA_PATTERN = re.compile(r"RESOURCE_EXHAUSTED|429|quota|rate.?limit", re.IGNORECASE)
+
+QUOTA_MESSAGE = (
+    "Geminiの無料枠を今日の分だけ使い切りました。"
+    "日付が変わると戻ります（銭湯速報は別のモデルを使うので、まだ試せます）。"
+)
+
+
+def _looks_like_quota_error(text):
+    return bool(text) and bool(_QUOTA_PATTERN.search(text))
+
+
+def _shorten(line, limit=110):
+    """進捗欄に出す用に切り詰める。エラーJSONで画面が埋まるのを防ぐ。"""
+    line = line.strip()
+    if _looks_like_quota_error(line) and len(line) > limit:
+        return "Geminiの呼び出しが混み合っています…"
+    return line if len(line) <= limit else line[:limit] + "…"
+
+
 def _run_script(script, workspace, phase, on_progress=None):
     """スクリプトを1本、作業ディレクトリの中で実行する。
 
@@ -218,7 +240,7 @@ def _run_script(script, workspace, phase, on_progress=None):
             line = line.rstrip()
             lines.append(line)
             if on_progress and not _is_noise(line):
-                on_progress(phase, line.strip())
+                on_progress(phase, _shorten(line))
         process.wait()
     finally:
         watchdog.cancel()
@@ -266,12 +288,16 @@ def generate(kind, on_progress=None):
 
     # 1. ニュース取得
     notify("news", f"{pipeline.label}のニュースを探しています")
-    _run_script(pipeline.news, workspace, "news", on_progress)
+    news_log = _run_script(pipeline.news, workspace, "news", on_progress)
 
     # ニュースが0件でもスクリプトは正常終了してしまうので、ここで止める。
     # 素通りさせると締めスライド1枚だけができて、成功したように見えてしまう。
     posts_path = os.path.join(workspace, pipeline.posts_file)
     if not os.path.exists(posts_path) or os.path.getsize(posts_path) == 0:
+        # Geminiの枠切れが原因のことがある。「ニュースが無い」と言われると
+        # 手の打ちようがないので、そのときは理由をそのまま伝える。
+        if _looks_like_quota_error(news_log):
+            raise PipelineError(QUOTA_MESSAGE, "\n".join(news_log.splitlines()[-20:]))
         raise PipelineError(
             "使えるニュースが見つかりませんでした。少し時間をおいて試してください。"
         )

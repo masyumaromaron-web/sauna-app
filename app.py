@@ -331,7 +331,11 @@ HTML_PAGE = """
   .detail {
     text-align: center; color: var(--muted); font-size: 12px; min-height: 18px;
     margin-bottom: 12px; word-break: break-all;
+    /* 長いエラー本文が流れてきても画面を埋めない。全文はログで見られる */
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow: hidden;
   }
+  .status { word-break: break-word; }
   .bar {
     height: 6px; background: var(--panel); border-radius: 3px;
     overflow: hidden; display: none;
