@@ -1,0 +1,24 @@
+# 秘密情報（絶対にコミットしない）
+.env
+
+# ローカル開発環境
+.venv/
+venv/
+
+# 生成物（Renderのディスクは揮発するので永続化しない）
+generated/
+jobs/
+topic_*.jpg
+news_*.jpg
+sento_*.jpg
+monthly_*.jpg
+posts*.txt
+caption*.txt
+caption_source*.txt
+used_news*.json
+used_theme*.json
+
+# OS / Python
+.DS_Store
+__pycache__/
+*.pyc

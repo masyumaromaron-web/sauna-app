@@ -3,21 +3,23 @@
 サウナ話題 生成アプリ（窓口）
 -----------------------------
 スマホのブラウザからアクセスして使う。
-「生成」ボタン → news_topic.py → slide_topic.py → caption_topic.py を順に実行
-→ できた画像4枚とキャプションを画面に返す。
+「生成」ボタン → pipelines.generate() → できた画像4枚とキャプションを画面に返す。
+
+どのスクリプトをどの順で走らせるかは pipelines.py が持っている。
+ここは「受け取って画面に渡す」だけに徹する。
 
 元の main_topic.py がやっていた「PCフォルダへ移動」は、
 ここでは「画面に表示してダウンロードさせる」に置き換えている。
 """
 
-import os
-import re
 import glob
-import base64
-import subprocess
+import os
+import shutil
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+import pipelines
 
 app = FastAPI()
 
@@ -29,19 +31,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/images", StaticFiles(directory=OUTPUT_DIR), name="images")
 
 
-def run_script(name):
-    """1つのPythonスクリプトを実行し、成否とログを返す"""
-    result = subprocess.run(
-        ["python", name],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    ok = result.returncode == 0
-    log = (result.stdout or "") + (result.stderr or "")
-    return ok, log
-
-
 @app.get("/", response_class=HTMLResponse)
 def home():
     """スマホで開くトップ画面"""
@@ -51,60 +40,34 @@ def home():
 @app.post("/generate")
 def generate():
     """生成ボタンが押されたときの処理"""
-    logs = []
-
     # 古い画像を消してから始める
     for f in glob.glob(os.path.join(OUTPUT_DIR, "*.jpg")):
         os.remove(f)
 
-    # 1. ニュース取得 → posts_topic.txt / caption_source_topic.txt 生成
-    ok, log = run_script("news_topic.py")
-    logs.append("【1/3 ニュース取得】\n" + log[-1500:])
-    if not ok:
-        return JSONResponse({"ok": False, "step": "news", "log": "\n\n".join(logs)})
+    progress = []
 
-    # posts_topic.txt が空＝候補ゼロのときは止める
-    if not os.path.exists("posts_topic.txt") or os.path.getsize("posts_topic.txt") == 0:
-        return JSONResponse({"ok": False, "step": "news",
-                             "log": "\n\n".join(logs) + "\n\n候補ニュースが見つかりませんでした。もう一度お試しください。"})
+    try:
+        images, caption = pipelines.generate("topic", on_progress=progress.append)
+    except pipelines.PipelineError as e:
+        log = "\n".join(progress[-60:])
+        if e.log:
+            log += "\n\n" + e.log
+        return JSONResponse({"ok": False, "step": e.message, "log": log})
 
-    # 2. スライド生成 → topic_1.jpg 〜 topic_4.jpg
-    ok, log = run_script("slide_topic.py")
-    logs.append("【2/3 スライド生成】\n" + log[-1500:])
-    if not ok:
-        return JSONResponse({"ok": False, "step": "slide", "log": "\n\n".join(logs)})
-
-    # 3. キャプション生成 → caption_topic.txt
-    ok, log = run_script("caption_topic.py")
-    logs.append("【3/3 キャプション生成】\n" + log[-1500:])
-    if not ok:
-        return JSONResponse({"ok": False, "step": "caption", "log": "\n\n".join(logs)})
-
-    # できた画像を generated/ に移動して、URLのリストを作る
-    image_files = sorted(glob.glob("topic_*.jpg"), key=_topic_number)
+    # できた画像を generated/ に移して、URLのリストを作る。
+    # 作業ディレクトリは揮発前提なので、移し終えたら片付ける。
     image_urls = []
-    for f in image_files:
-        dest = os.path.join(OUTPUT_DIR, os.path.basename(f))
-        os.replace(f, dest)
-        image_urls.append("/images/" + os.path.basename(f))
-
-    # キャプションを読み込む
-    caption = ""
-    if os.path.exists("caption_topic.txt"):
-        with open("caption_topic.txt", "r", encoding="utf-8") as fp:
-            caption = fp.read()
+    for path in images:
+        name = os.path.basename(path)
+        shutil.copyfile(path, os.path.join(OUTPUT_DIR, name))
+        image_urls.append("/images/" + name)
+    pipelines.cleanup(images)
 
     return JSONResponse({
         "ok": True,
         "images": image_urls,
         "caption": caption,
     })
-
-
-def _topic_number(path):
-    """topic_3.jpg → 3 のように番号を取り出して並べ替えに使う"""
-    m = re.search(r"topic_(\d+)\.jpg", path)
-    return int(m.group(1)) if m else 0
 
 
 # ============ スマホで開く画面（HTML） ============
