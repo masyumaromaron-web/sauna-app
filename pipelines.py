@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -80,7 +81,10 @@ class Pipeline:
         self.image_prefix = image_prefix
 
 
-# 対応ジャンル。Phase 5 で sauna / sento をここに足す。
+# 対応ジャンル。画面のジャンル選択もこの順で並ぶ。
+# 月末まとめ（monthly）は載せていない。slide_monthly.py が話題版と同じ
+# posts_topic.txt を読むうえ、集計元の used_news_topic.json がRenderでは
+# 揮発するため。月イチの作業なので手元のPCで走らせる。
 PIPELINES = {
     "topic": Pipeline(
         key="topic",
@@ -91,6 +95,26 @@ PIPELINES = {
         posts_file="posts_topic.txt",
         caption_file="caption_topic.txt",
         image_prefix="topic",
+    ),
+    "sauna": Pipeline(
+        key="sauna",
+        label="サウナ速報",
+        news="news_gemini.py",
+        slide="slide.py",
+        caption="caption.py",
+        posts_file="posts.txt",
+        caption_file="caption.txt",
+        image_prefix="news",
+    ),
+    "sento": Pipeline(
+        key="sento",
+        label="銭湯速報",
+        news="news_sento.py",
+        slide="slide_sento.py",
+        caption="caption_sento.py",
+        posts_file="posts_sento.txt",
+        caption_file="caption_sento.txt",
+        image_prefix="sento",
     ),
 }
 
@@ -176,17 +200,33 @@ def _run_script(script, workspace, phase, on_progress=None):
         bufsize=1,
     )
 
+    # 見張り役。標準出力を読む for 文は、子が黙り込んだまま生きていると
+    # そこで止まりっぱなしになり、後ろの wait(timeout=...) まで進まない。
+    # 実際 news_gemini.py がGeminiの接続断をリトライし続けて20分固まった。
+    # 時間で確実に打ち切れるよう、別スレッドから kill する。
+    timed_out = threading.Event()
+
+    def _give_up():
+        timed_out.set()
+        process.kill()
+
+    watchdog = threading.Timer(STEP_TIMEOUT_SEC, _give_up)
+    watchdog.start()
+
     try:
         for line in process.stdout:
             line = line.rstrip()
             lines.append(line)
             if on_progress and not _is_noise(line):
                 on_progress(phase, line.strip())
-        process.wait(timeout=STEP_TIMEOUT_SEC)
-    except subprocess.TimeoutExpired:
-        process.kill()
+        process.wait()
+    finally:
+        watchdog.cancel()
+
+    if timed_out.is_set():
         raise PipelineError(
-            f"{script} が時間内に終わりませんでした",
+            f"{script} が {STEP_TIMEOUT_SEC // 60} 分たっても終わらないので中断しました。"
+            "時間をおいて試してください。",
             "\n".join(lines[-40:]),
         )
 

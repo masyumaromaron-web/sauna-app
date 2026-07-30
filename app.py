@@ -221,6 +221,14 @@ async def api_generate(payload: dict = None, x_passcode: str = Header(default=""
 
     job = _new_job(kind)
     with _jobs_lock:
+        # 生成は一度に1件だけ。Renderの無料プランはメモリ512MBしかなく、
+        # 同時に走らせると外部への接続も詰まる（実際3本同時でGeminiの
+        # 接続が切られた）。画面もタブを増やせば二重に押せてしまう。
+        if any(j["state"] in ("queued", "running") for j in _jobs.values()):
+            return JSONResponse(
+                {"error": "いま別の生成が動いています。終わってから試してください。"},
+                status_code=409,
+            )
         _jobs[job["id"]] = job
 
     threading.Thread(target=_run_job, args=(job["id"],), daemon=True).start()
@@ -587,6 +595,15 @@ async function start() {
       setStatus('', '');
       $('bar').style.display = 'none';
       showGate('合言葉をもう一度入れてください');
+      btn.disabled = false;
+      return;
+    }
+
+    if (res.status === 409) {
+      // 別の生成が動いている（タブを2つ開いた等）
+      const data = await res.json();
+      setStatus('⚠️ ' + data.error, '');
+      $('bar').style.display = 'none';
       btn.disabled = false;
       return;
     }
