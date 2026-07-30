@@ -29,10 +29,14 @@ import time
 import uuid
 from fastapi import FastAPI, Header
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 import pipelines
 
 app = FastAPI()
+
+# ホーム画面に追加するためのアイコンと manifest.json
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 合言葉。未設定なら誰でも使える（手元で動かすときに困らないように）。
 APP_PASSCODE = os.getenv("APP_PASSCODE", "").strip()
@@ -285,7 +289,12 @@ HTML_PAGE = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#12303f">
-<title>サウナ話題ジェネレーター</title>
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="サウナ生成">
+<title>サウナニュース ジェネレーター</title>
 <style>
   /* 関西サウナニュースの色に合わせる。濃紺 × 生成り、差し色にオレンジ。
      読み込むものを増やすと表示が遅くなるので、Webフォントも画像も使わない。 */
@@ -301,7 +310,10 @@ HTML_PAGE = """
   body {
     font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
     background: var(--navy); color: var(--cream);
-    margin: 0 auto; padding: 20px 20px 48px; max-width: 600px;
+    margin: 0 auto; max-width: 600px;
+    /* ホーム画面から開くと画面の端まで使うので、切り欠きの分だけ内側に寄せる */
+    padding: calc(20px + env(safe-area-inset-top)) 20px
+             calc(48px + env(safe-area-inset-bottom));
     -webkit-text-size-adjust: 100%;
   }
   h1 { font-size: 19px; text-align: center; letter-spacing: .04em; margin: 8px 0 4px; }
@@ -407,7 +419,7 @@ HTML_PAGE = """
 </style>
 </head>
 <body>
-  <h1>♨️ サウナ話題ジェネレーター</h1>
+  <h1>♨️ サウナニュース ジェネレーター</h1>
 
   <div id="gate">
     <div class="sub">合言葉を入れてください</div>

@@ -1,0 +1,16 @@
+{
+  "name": "サウナニュース ジェネレーター",
+  "short_name": "サウナ生成",
+  "description": "ニュースを選んでスライド画像とキャプションを作ります",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12303f",
+  "theme_color": "#12303f",
+  "lang": "ja",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
