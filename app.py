@@ -237,71 +237,99 @@ HTML_PAGE = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#12303f">
 <title>サウナ話題ジェネレーター</title>
 <style>
+  /* 関西サウナニュースの色に合わせる。濃紺 × 生成り、差し色にオレンジ。
+     読み込むものを増やすと表示が遅くなるので、Webフォントも画像も使わない。 */
+  :root {
+    --navy:   #12303f;   /* 地の色 */
+    --cream:  #e9e2cf;   /* 文字 */
+    --orange: #e8862d;   /* 差し色。保存ボタンと進捗バーだけに使う */
+    --panel:  #1a3f52;   /* 一段明るい面 */
+    --muted:  #93a7b3;   /* 補足文字 */
+    --line:   rgba(233,226,207,.16);
+  }
+  * { box-sizing: border-box; }
   body {
     font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
-    background: #0f1f1a; color: #eaf3ee; margin: 0; padding: 20px;
-    max-width: 600px; margin-left: auto; margin-right: auto;
+    background: var(--navy); color: var(--cream);
+    margin: 0 auto; padding: 20px 20px 48px; max-width: 600px;
+    -webkit-text-size-adjust: 100%;
   }
-  h1 { font-size: 20px; text-align: center; }
-  .sub { text-align: center; color: #8fae9f; font-size: 13px; margin-bottom: 24px; }
+  h1 { font-size: 19px; text-align: center; letter-spacing: .04em; margin: 8px 0 4px; }
+  .sub { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 22px; }
+
+  button { font-family: inherit; cursor: pointer; }
   button#go {
     width: 100%; padding: 18px; font-size: 18px; font-weight: bold;
-    background: #1f7a4d; color: white; border: none; border-radius: 14px;
-    cursor: pointer;
+    background: var(--cream); color: var(--navy);
+    border: none; border-radius: 14px;
   }
-  button#go:disabled { background: #555; }
-  .status { text-align: center; margin: 20px 0 6px; color: #b7d3c5; min-height: 24px; }
+  button#go:disabled { background: var(--panel); color: var(--muted); }
+
+  .status { text-align: center; margin: 20px 0 6px; font-size: 15px; min-height: 24px; }
   .detail {
-    text-align: center; color: #6f8f7f; font-size: 12px; min-height: 18px;
+    text-align: center; color: var(--muted); font-size: 12px; min-height: 18px;
     margin-bottom: 12px; word-break: break-all;
   }
-  .bar { height: 6px; background: #1c3a2e; border-radius: 3px; overflow: hidden; display: none; }
-  .bar > i { display: block; height: 100%; width: 0; background: #2c5; transition: width .4s; }
+  .bar {
+    height: 6px; background: var(--panel); border-radius: 3px;
+    overflow: hidden; display: none;
+  }
+  .bar > i {
+    display: block; height: 100%; width: 0;
+    background: var(--orange); transition: width .4s;
+  }
 
   .toolbar {
     display: none; align-items: center; justify-content: space-between;
-    margin: 18px 0 10px; font-size: 14px; color: #b7d3c5;
+    margin: 20px 0 10px; font-size: 14px;
   }
   .toolbar label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-  .toolbar input { width: 20px; height: 20px; accent-color: #2c5; }
-  .count { color: #8fae9f; font-size: 13px; }
+  input[type=checkbox] {
+    width: 20px; height: 20px; accent-color: var(--orange); margin: 0;
+  }
+  .count { color: var(--muted); font-size: 13px; }
 
   .shot { position: relative; margin-bottom: 12px; }
-  .shot img { width: 100%; border-radius: 12px; display: block; }
-  .shot.off img { opacity: .35; }
+  .shot img {
+    width: 100%; border-radius: 12px; display: block;
+    border: 1px solid var(--line);
+  }
+  .shot.off img { opacity: .3; }
   .shot label {
     position: absolute; top: 10px; left: 10px;
     display: flex; align-items: center; gap: 8px;
-    background: rgba(15,31,26,.82); color: #eaf3ee;
+    background: rgba(18,48,63,.85); color: var(--cream);
     padding: 8px 12px; border-radius: 10px; font-size: 14px; cursor: pointer;
   }
-  .shot input { width: 20px; height: 20px; accent-color: #2c5; }
 
   button.save {
     display: none; width: 100%; padding: 18px; margin-top: 4px;
     font-size: 17px; font-weight: bold;
-    background: #e8862d; color: #1a1005; border: none; border-radius: 14px;
-    cursor: pointer;
+    background: var(--orange); color: var(--navy);
+    border: none; border-radius: 14px;
   }
-  button.save:disabled { background: #5a4a38; color: #9a8b7a; }
+  button.save:disabled { background: var(--panel); color: var(--muted); }
   .hint {
-    text-align: center; color: #8fae9f; font-size: 12px;
-    min-height: 18px; margin-top: 8px;
+    text-align: center; color: var(--muted); font-size: 12px;
+    min-height: 18px; margin-top: 8px; line-height: 1.5;
   }
 
   .caption-box {
-    background: #16302593; border: 1px solid #2c5; border-radius: 12px;
-    padding: 16px; white-space: pre-wrap; font-size: 14px; line-height: 1.7;
-    margin-top: 16px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; white-space: pre-wrap; font-size: 14px; line-height: 1.75;
+    margin-top: 20px;
   }
   button.copy {
-    width: 100%; padding: 12px; margin-top: 10px; font-size: 15px;
-    background: #2c5; color: #0f1f1a; border: none; border-radius: 10px;
-    font-weight: bold; cursor: pointer;
+    width: 100%; padding: 13px; margin-top: 10px; font-size: 15px; font-weight: bold;
+    background: transparent; color: var(--cream);
+    border: 1px solid var(--line); border-radius: 10px;
   }
-  details { margin-top: 20px; color: #7a978a; font-size: 12px; }
+
+  details { margin-top: 24px; color: var(--muted); font-size: 12px; }
+  summary { cursor: pointer; }
   pre { white-space: pre-wrap; word-break: break-all; }
 </style>
 </head>
