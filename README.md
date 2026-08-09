@@ -22,10 +22,54 @@ iPhoneなら Safari の共有メニューから「ホーム画面に追加」し
 | --- | --- | --- |
 | `GEMINI_API_KEY` | Google AI Studio で発行したAPIキー | 必須 |
 | `APP_PASSCODE` | 入口で聞く合言葉 | 推奨 |
+| `SUPABASE_URL` | Supabaseプロジェクトのurl | 推奨 |
+| `SUPABASE_KEY` | Supabaseの service_role キー | 推奨 |
 
 `APP_PASSCODE` を設定しないと、URLを知っている人は誰でも生成できてしまう
 （＝Gemini APIを叩かれる）。厳密な認証ではなく濫用防止の目隠しなので、
 覚えやすいもので構わない。未設定なら合言葉なしで動く。
+
+`SUPABASE_*` は使ったニュースの履歴を残すために使う（下の「履歴」を参照）。
+未設定でもアプリは動くが、同じネタが繰り返し出やすくなる。
+
+## 履歴（同じネタを繰り返さないために）
+
+Renderはディスクが揮発するので、`used_news_*.json` がその場限りで消える。
+放っておくと同じ記事が何度も選ばれるため、履歴だけ Supabase に置いている。
+
+### 用意するもの
+
+1. Supabase のダッシュボード → SQL Editor で `supabase_setup.sql` を実行する
+2. Project Settings → API から次の2つを控える
+   - Project URL → `SUPABASE_URL`
+   - `service_role` キー → `SUPABASE_KEY`
+3. Renderの環境変数に入れる
+
+`service_role` キーはこのアプリのサーバー側でしか使わない。ブラウザには
+一切渡していないので外に出ることはないが、扱いはAPIキーと同じで、
+リポジトリにも画面にも書かないこと。
+
+### 手元の履歴を引き継ぐ
+
+これまでPCで貯めた `used_news_*.json` があるなら、流し込んでおくとその分から
+重複を避けられる。`~/kansai-sauna` 側にあるファイルも自動で探す。
+
+```bash
+.venv/bin/python tools/history_setup.py            # 今どうなっているか見る
+.venv/bin/python tools/history_setup.py --import   # 手元のJSONを流し込む
+```
+
+同じ記事は `(kind, title)` の一意制約で弾かれるので、何度実行しても増えない。
+
+### しくみ
+
+既存スクリプトには手を入れていない。`pipelines.py` が
+
+1. 走らせる前に、Supabaseの履歴を作業ディレクトリの `used_news_*.json` に書く
+2. 走り終わったら、増えた分だけをSupabaseに戻す
+
+という面倒を見るので、スクリプトからは「いつもの場所にいつものファイルがある」
+だけに見える。Supabaseが未設定でも、繋がらなくても、生成そのものは止まらない。
 
 ## 構成
 
@@ -77,9 +121,9 @@ echo 'GEMINI_API_KEY=xxxxx' > .env
 
 ## 積み残し
 
-- **重複ネタ判定の履歴が残らない。** `used_news_*.json` / `used_theme_*.json` は
-  Renderのディスクが揮発するので育たない。今はテーマと記事の選択を
-  ランダムにして被りを減らしている。Supabaseに履歴を置く案を検討中
+- **テーマの履歴（`used_theme_*.json`）は残していない。** テーマは候補のある
+  ものからランダムに選ぶ作りなので、履歴が無くても偏りにくい。記事の重複を
+  防ぐほうが効くので、そちらだけSupabaseに置いている
 - **月末まとめ（monthly）は載せていない。** `slide_monthly.py` が話題版と同じ
   `posts_topic.txt` を読むうえ、集計元が上記の履歴なので成立しない。
   月イチの作業なので手元のPCで `main_monthly.py` を走らせる

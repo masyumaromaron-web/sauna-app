@@ -31,6 +31,7 @@ os.chdir() を使っていないのは、あれがプロセス全体に効いて
 """
 
 import glob
+import json
 import os
 import re
 import shutil
@@ -39,6 +40,8 @@ import sys
 import tempfile
 import threading
 import time
+
+import history
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -49,8 +52,9 @@ STEP_TIMEOUT_SEC = 420
 LINKED_ASSETS = ("backgrounds", "fonts")
 
 # 作業ディレクトリに引き継ぐ状態ファイル。
-# Renderではディスクが揮発するため実際には育たないが、リポジトリに置けば
-# 種として効く。恒久対応は Phase 7（Supabase）で行う。
+# Renderではディスクが揮発するので、ニュースの履歴は Supabase から
+# 引くようにした（history.py）。ここでコピーするのはその種と、
+# Supabaseを使わないときの控え。
 STATE_FILES = (
     "used_news.json", "used_theme.json",
     "used_news_sento.json", "used_theme_sento.json",
@@ -70,7 +74,7 @@ class Pipeline:
     """1ジャンル分の「どのスクリプトを、どの順で走らせるか」の定義。"""
 
     def __init__(self, key, label, news, slide, caption,
-                 posts_file, caption_file, image_prefix):
+                 posts_file, caption_file, image_prefix, used_news_file):
         self.key = key
         self.label = label
         self.news = news
@@ -79,6 +83,9 @@ class Pipeline:
         self.posts_file = posts_file
         self.caption_file = caption_file
         self.image_prefix = image_prefix
+        # そのスクリプトが「使ったニュース」を書き出すファイル名。
+        # Supabaseとやりとりするのはこの中身。
+        self.used_news_file = used_news_file
 
 
 # 対応ジャンル。画面のジャンル選択もこの順で並ぶ。
@@ -95,6 +102,7 @@ PIPELINES = {
         posts_file="posts_topic.txt",
         caption_file="caption_topic.txt",
         image_prefix="topic",
+        used_news_file="used_news_topic.json",
     ),
     "sauna": Pipeline(
         key="sauna",
@@ -105,6 +113,7 @@ PIPELINES = {
         posts_file="posts.txt",
         caption_file="caption.txt",
         image_prefix="news",
+        used_news_file="used_news.json",
     ),
     "sento": Pipeline(
         key="sento",
@@ -115,6 +124,7 @@ PIPELINES = {
         posts_file="posts_sento.txt",
         caption_file="caption_sento.txt",
         image_prefix="sento",
+        used_news_file="used_news_sento.json",
     ),
 }
 
@@ -131,6 +141,51 @@ class PipelineError(Exception):
 def available_kinds():
     """UIのジャンル選択に出す [(key, label), ...] を返す。"""
     return [(p.key, p.label) for p in PIPELINES.values()]
+
+
+def _seed_history(workspace, pipeline):
+    """Supabaseの履歴を作業ディレクトリの used_news_*.json に書いておく。
+
+    こうするとスクリプトからは「いつもの場所にいつものファイルがある」だけに
+    見えるので、スクリプト側を書き換えずに済む。
+    戻り値は種にしたタイトルの集合（後で増えた分を割り出すのに使う）。
+    Supabaseが未設定なら None を返し、これまでどおりの動きに落とす。
+    """
+    entries = history.load_entries(pipeline.key)
+    if entries is None:
+        return None
+
+    path = os.path.join(workspace, pipeline.used_news_file)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+    print(f"履歴を {len(entries)} 件読み込みました（{pipeline.key}）")
+    return history.titles_of(entries)
+
+
+def _store_history(workspace, pipeline, seeded_titles):
+    """スクリプトが書き足した分だけをSupabaseに戻す。"""
+    if seeded_titles is None:
+        return
+
+    path = os.path.join(workspace, pipeline.used_news_file)
+    if not os.path.exists(path):
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+    except Exception as e:
+        print(f"履歴ファイルが読めませんでした: {e}")
+        return
+
+    added = [
+        entry for entry in entries
+        if (entry.get("title") if isinstance(entry, dict) else entry) not in seeded_titles
+    ]
+    if added:
+        saved = history.save_entries(pipeline.key, added)
+        print(f"履歴に {saved} 件追加しました（{pipeline.key}）")
 
 
 def _make_workspace(kind):
@@ -286,9 +341,16 @@ def generate(kind, on_progress=None):
 
     workspace = _make_workspace(kind)
 
+    # Supabaseに履歴があればそれを種にする。無ければリポジトリに置いた分のまま。
+    seeded_titles = _seed_history(workspace, pipeline)
+
     # 1. ニュース取得
     notify("news", f"{pipeline.label}のニュースを探しています")
     news_log = _run_script(pipeline.news, workspace, "news", on_progress)
+
+    # 使ったニュースを控える。画像がこの後で失敗しても、Geminiは既に
+    # そのネタを消費しているので、ここで残しておくほうが実態に合う。
+    _store_history(workspace, pipeline, seeded_titles)
 
     # ニュースが0件でもスクリプトは正常終了してしまうので、ここで止める。
     # 素通りさせると締めスライド1枚だけができて、成功したように見えてしまう。
