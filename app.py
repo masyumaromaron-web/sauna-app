@@ -31,6 +31,7 @@ from fastapi import FastAPI, Header
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import history
 import pipelines
 
 app = FastAPI()
@@ -194,9 +195,15 @@ def _passcode_ok(value):
 
 @app.get("/api/config")
 def api_config():
-    """画面の組み立てに要る情報。合言葉が要るかと、選べるジャンル。"""
+    """画面の組み立てに要る情報。合言葉が要るかと、選べるジャンル。
+
+    history は「履歴（Supabase）が繋がっているか」。画面では使っていないが、
+    環境変数を入れたあとに効いているかを外から確かめる手がかりになる。
+    真偽値だけで、接続先や鍵は出さない。
+    """
     return {
         "needs_passcode": bool(APP_PASSCODE),
+        "history": history.is_enabled(),
         "kinds": [{"key": key, "label": label}
                   for key, label in pipelines.available_kinds()],
     }
