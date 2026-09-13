@@ -199,12 +199,40 @@ def filter_by_theme(candidates, theme):
     return [n for n in candidates if any(kw in n["combined_text"] for kw in keywords)]
 
 
+def select_avoiding_facility_dupes(candidates, max_count, already_selected=None):
+    """
+    candidatesを先頭から見ていき、同じfacility（空文字は除く）が
+    重複しないように max_count 件まで選ぶ。
+    already_selected があれば、その施設も重複チェックに含める。
+    """
+    selected = list(already_selected) if already_selected else []
+    used_facilities = {n["facility"] for n in selected if n.get("facility")}
+    selected_titles = {n["title"] for n in selected}
+
+    for news in candidates:
+        if len(selected) >= max_count:
+            break
+        if news["title"] in selected_titles:
+            continue
+        facility = news.get("facility", "")
+        if facility and facility in used_facilities:
+            print(f"施設重複のためスキップ:【{facility}】{news['title']}")
+            continue
+        selected.append(news)
+        selected_titles.add(news["title"])
+        if facility:
+            used_facilities.add(facility)
+
+    return selected
+
+
 def fill_with_fallback(selected, candidates, theme):
     """
     selectedが3件未満のとき、補完テーマ順に候補を足して3件にする。
-    すでにselectedにあるニュースは除外。
+    すでにselectedにあるニュース・同じ施設は除外。
     """
     selected_titles = {n["title"] for n in selected}
+    used_facilities = {n["facility"] for n in selected if n.get("facility")}
 
     for fallback_theme in FALLBACK_THEME_ORDER:
         if fallback_theme == theme:
@@ -221,11 +249,33 @@ def fill_with_fallback(selected, candidates, theme):
         for news in fallback_candidates:
             if len(selected) >= MAX_SELECTED_NEWS:
                 break
+            facility = news.get("facility", "")
+            if facility and facility in used_facilities:
+                continue
             selected.append(news)
             selected_titles.add(news["title"])
+            if facility:
+                used_facilities.add(facility)
             print(f"補完テーマ【{fallback_theme}】から追加: {news['title']}")
 
-    # それでも足りない場合はスコア上位で埋める
+    # それでも足りない場合はスコア上位で埋める（施設重複は避ける）
+    if len(selected) < MAX_SELECTED_NEWS:
+        remaining = [n for n in candidates if n["title"] not in selected_titles]
+        remaining.sort(key=lambda x: x["score"], reverse=True)
+        for news in remaining:
+            if len(selected) >= MAX_SELECTED_NEWS:
+                break
+            facility = news.get("facility", "")
+            if facility and facility in used_facilities:
+                continue
+            selected.append(news)
+            selected_titles.add(news["title"])
+            if facility:
+                used_facilities.add(facility)
+            print(f"スコア上位から補完追加: {news['title']}")
+
+    # それでも枠が余る場合（施設重複を避け切れない）は、
+    # 記事ゼロで投稿できないよりはマシなので重複を許容して埋める
     if len(selected) < MAX_SELECTED_NEWS:
         remaining = [n for n in candidates if n["title"] not in selected_titles]
         remaining.sort(key=lambda x: x["score"], reverse=True)
@@ -234,7 +284,7 @@ def fill_with_fallback(selected, candidates, theme):
                 break
             selected.append(news)
             selected_titles.add(news["title"])
-            print(f"スコア上位から補完追加: {news['title']}")
+            print(f"施設重複を許容して補完追加: {news['title']}")
 
     return selected
 
@@ -1128,7 +1178,9 @@ def main():
     top_pool = theme_matched[:8]
     random.shuffle(top_pool)
     theme_matched = top_pool + theme_matched[8:]
-    selected_news = theme_matched[:MAX_SELECTED_NEWS]
+
+    # 同じ施設が同日の投稿内で重複しないように選定
+    selected_news = select_avoiding_facility_dupes(theme_matched, MAX_SELECTED_NEWS)
 
     print(f"テーマ【{today_theme}】でマッチ: {len(theme_matched)}件 → 選定: {len(selected_news)}件")
 
